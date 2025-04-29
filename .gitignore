@@ -12,7 +12,7 @@ __pycache__/
 .venv/
 venv/
 
-# Data / binaries
+# # Data / binaries
 doc_ids.pkl
 doc_meta.pkl
 doc_tfidf_matrix.npz
@@ -23,5 +23,5 @@ metadata_loader.py    # if you don’t want to re-run every time
 web_crawl/
 whoosh_index/
 
-# Output / logs
+# # Output / logs
 *.csv
