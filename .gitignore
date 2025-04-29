@@ -25,3 +25,6 @@ whoosh_index/
 
 # # Output / logs
 *.csv
+doc_meta.pkl
+doc_tfidf_matrix.npz
+web_crawl/
