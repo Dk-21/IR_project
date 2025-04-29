@@ -21,6 +21,7 @@ vocab.pkl
 tfidf_vectorizer.pkl
 *.pkl
 *.dat
+*.zip
 # metadata_loader.py    # if you don’t want to re-run every time
 web_crawl/
 whoosh_index/
