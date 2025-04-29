@@ -13,13 +13,13 @@ __pycache__/
 venv/
 
 # # Data / binaries
-doc_ids.pkl
-doc_meta.pkl
-doc_tfidf_matrix.npz
-idf.npy
-vocab.pkl
-tfidf_vectorizer.pkl
-metadata_loader.py    # if you don’t want to re-run every time
+# doc_ids.pkl
+# doc_meta.pkl
+# doc_tfidf_matrix.npz
+# idf.npy
+# vocab.pkl
+# tfidf_vectorizer.pkl
+# metadata_loader.py    # if you don’t want to re-run every time
 web_crawl/
 whoosh_index/
 
