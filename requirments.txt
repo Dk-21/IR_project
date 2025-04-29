@@ -1,0 +1,20 @@
+# API framework
+fastapi>=0.95.0
+uvicorn[standard]>=0.23.0
+
+# Data & IR core
+numpy>=1.24.0
+scipy>=1.10.0
+scikit-learn>=1.3.0
+
+# BSON loading
+pymongo>=4.4.0          # for decode_file_iter
+
+# Text processing
+nltk>=3.8.0
+
+# Optional (if you’re using page_features.py)
+pickle5                # back-compat pickle loader (if needed)
+
+# Development
+python-dotenv>=1.0.0    # for env var support (if desired)
