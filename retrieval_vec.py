@@ -17,7 +17,7 @@ CANDIDATE_POOL = 20
 # Load once
 print("🔄 Loading TF–IDF matrix for BM25 + cosine rerank…")
 tfidf_matrix, doc_ids, vocab = load_matrix()   # sparse TF–IDF
-meta = load_metadata()                          # [(doc_id, title, url, snippet), …]
+meta = load_metadata()                          # now 5-tuples: (id, title, url, snippet, sents)
 N, V = tfidf_matrix.shape
 
 # Precompute IDF & TF matrices for BM25
@@ -36,48 +36,41 @@ _mat_norm = normalize(tfidf_matrix, axis=1, copy=False)
 # Build inverse vocab for title‐boost lookup
 _inv_vocab = {i:t for t,i in vocab.items()}
 
+
 def retrieve_bm25(query: str, top_k: int = 10):
-    """
-    1) BM25 on the entire corpus → top CANDIDATE_POOL candidates
-    2) Title‐boost & phrase bonus
-    3) Two‐stage cosine TF–IDF rerank → final top_k
-    """
-    # --- Stage 0: preprocess query ---
-    qbow = query_to_bow(query, vocab)    # {term_idx: freq}
+    # Stage 0: preprocess query
+    qbow = query_to_bow(query, vocab)
     if not qbow:
         return []
 
-    # --- Stage 1: BM25 ranking ---
+    # Stage 1: BM25 ranking
     bm25_scores = np.zeros(N, dtype=float)
-    for term_idx, qf in qbow.items():
-        w_idf = idf[term_idx]
-        tf_col = tf_matrix[:, term_idx].toarray().ravel()
-        denom = tf_col + k1 * (1 - b + b * doc_lens / avgdl)
-        bm25_scores += w_idf * ((k1+1) * tf_col) / denom
+    for term_idx, freq in qbow.items():
+        w_idf    = idf[term_idx]
+        tf_col   = tf_matrix[:, term_idx].toarray().ravel()
+        denom    = tf_col + k1 * (1 - b + b * doc_lens / avgdl)
+        bm25_scores += w_idf * ((k1 + 1) * tf_col) / denom
 
-    # Grab top‐CANDIDATE_POOL indices
+    # Top candidates
     cand_idxs = np.argsort(bm25_scores)[::-1][:CANDIDATE_POOL]
 
-    # --- Stage 2: Apply title‐boost & phrase bonus ---
+    # Stage 2: title‐boost & phrase bonus
     enhanced_scores = []
     phrase = query.lower()
     for idx in cand_idxs:
-        doc_id, title, url, snippet = meta[idx]
+        # UNPACK 5-tuple (ignore sents list)
+        doc_id, title, url, snippet, _ = meta[idx]
         domain = urlparse(url).netloc.lower()
-        if any(b in domain for b in BLOCK_DOMAINS):
+        if any(bd in domain for bd in BLOCK_DOMAINS):
             enhanced_scores.append(-np.inf)
             continue
 
         score = bm25_scores[idx]
-
-        # title boost: +0.1 per query term in title
         title_lower = title.lower()
-        for term_idx in qbow.keys():
-            term = _inv_vocab[term_idx]
+        for t_idx in qbow:
+            term = _inv_vocab[t_idx]
             if term in title_lower:
                 score += 0.1
-
-        # phrase bonus: +0.5 if full query appears in snippet
         if phrase in snippet.lower():
             score += 0.5
 
@@ -85,8 +78,7 @@ def retrieve_bm25(query: str, top_k: int = 10):
 
     enhanced_scores = np.array(enhanced_scores)
 
-    # --- Stage 3: Cosine TF–IDF rerank of the candidate pool ---
-    # Build query TF–IDF vector
+    # Stage 3: cosine TF–IDF rerank
     qv = np.zeros(V, dtype=float)
     for term_idx, freq in qbow.items():
         qv[term_idx] = freq * idf[term_idx]
@@ -94,36 +86,35 @@ def retrieve_bm25(query: str, top_k: int = 10):
     if norm > 0:
         qv /= norm
 
-    # Cosine sims against normalized matrix rows
     cand_mat = _mat_norm[cand_idxs]
     cos_sims = cand_mat.dot(qv)
 
-    # Combine the two scores (e.g. 50% BM25‐enhanced, 50% cosine)
     final_scores = 0.5 * enhanced_scores + 0.5 * cos_sims
 
-    # --- Pick top_k from the candidate pool ---
-    top_inds = np.argsort(final_scores)[::-1][:top_k]
-    hits = []
-    seen = set()
+    # Pick final top_k
+    top_hits = []
+    seen    = set()
+    top_inds = np.argsort(final_scores)[::-1]
     for i in top_inds:
         idx = cand_idxs[i]
-        doc_id, title, url, snippet = meta[idx]
+        doc_id, title, url, snippet, _ = meta[idx]
         domain = urlparse(url).netloc.lower()
         if domain in seen:
             continue
         seen.add(domain)
-        hits.append({
+
+        top_hits.append({
             "doc_id":  doc_id,
             "title":   title,
             "url":     url,
             "score":   float(final_scores[i]),
             "snippet": snippet
         })
-        if len(hits) >= top_k:
+        if len(top_hits) >= top_k:
             break
 
-    return hits
+    return top_hits
 
-# Alias for your existing API
+
 def retrieve_vec(query: str, top_k: int = 10):
     return retrieve_bm25(query, top_k=top_k)

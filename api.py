@@ -1,4 +1,5 @@
 # api.py
+from snippet_bert import get_best_snippet
 
 from fastapi import FastAPI
 from pydantic import BaseModel
@@ -51,12 +52,15 @@ class DualRank(BaseModel):
 def enrich_tf_only(hits: List[Dict], query: str) -> List[SearchHit]:
     """
     Turn raw retrieval hits into SearchHit objects,
-    pulling the precomputed snippet from metadata.
+    pulling a BERT‐selected snippet via precomputed embeddings.
     """
     out = []
     for h in hits:
         idx = doc2idx[h["doc_id"]]
-        _, title, url, snippet = meta[idx]
+        _, title, url, _static_snip, _ = meta[idx]
+        # get_best_snippet(query, doc_idx) reads only the few precomputed embeddings
+        dynamic_snip = get_best_snippet(query, idx)
+        snippet = dynamic_snip or _static_snip
         out.append(SearchHit(
             title=title,
             url=url,
@@ -69,14 +73,16 @@ def enrich_tf_only(hits: List[Dict], query: str) -> List[SearchHit]:
 def rerank_with_pagerank(hits: List[Dict], query: str) -> List[SearchHit]:
     """
     Given TF–IDF hits, compute combined score with PageRank,
-    and attach the same snippet from metadata.
+    and attach a BERT‐selected snippet via precomputed embeddings.
     """
     enriched = []
     for h in hits:
         pr   = feat.get(h["doc_id"], 0.0)
         comb = ALPHA * h["score"] + (1 - ALPHA) * pr
         idx = doc2idx[h["doc_id"]]
-        _, title, url, snippet = meta[idx]
+        _, title, url, _static_snip, _ = meta[idx]
+        dynamic_snip = get_best_snippet(query, idx)
+        snippet = dynamic_snip or _static_snip
         enriched.append(SearchHit(
             title=title,
             url=url,
@@ -96,6 +102,7 @@ def baseline(query: str):
     raw_hits = retrieve_vec(query, top_k=TOP_K)
     tf_only  = enrich_tf_only(raw_hits, query)
     pr_hits  = rerank_with_pagerank(raw_hits, query)
+    
     return DualRank(tfidf_only=tf_only, tfidf_pagerank=pr_hits)
 
 
