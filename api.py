@@ -1,11 +1,12 @@
 # api.py
 from snippet_bert import get_best_snippet
-
+from typing import List, Optional
 from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import List, Dict
 import numpy as np
-
+from query_vector import clean_query
+from feedback_rake import retrieve_expanded_rake
 from retrieval_vec import retrieve_vec
 from feeback_vec import retrieve_expanded
 from clusters import get_top_terms, association_clusters, metric_clusters, scalar_clusters
@@ -33,19 +34,20 @@ for term, idx in vocab.items():
 app = FastAPI(title="IR Search + Snippet API")
 
 
-# --- Pydantic models ---
+
 class SearchHit(BaseModel):
     title:          str
     url:            str
     score:          float
-    pagerank:       float = None
-    combined_score: float = None
+    pagerank:       Optional[float] = None
+    combined_score: Optional[float] = None
     snippet:        str
 
-
 class DualRank(BaseModel):
+    expanded_query: str
     tfidf_only:     List[SearchHit]
     tfidf_pagerank: List[SearchHit]
+
 
 
 # --- Helpers ---
@@ -97,63 +99,97 @@ def rerank_with_pagerank(hits: List[Dict], query: str) -> List[SearchHit]:
 
 
 # --- API Endpoints ---
+# api.py (excerpt)
+
 @app.get("/baseline", response_model=DualRank)
 def baseline(query: str):
-    raw_hits = retrieve_vec(query, top_k=TOP_K)
-    tf_only  = enrich_tf_only(raw_hits, query)
-    pr_hits  = rerank_with_pagerank(raw_hits, query)
-    
-    return DualRank(tfidf_only=tf_only, tfidf_pagerank=pr_hits)
+    # baseline has no expansion, so exp_q = original
+    clean_q= clean_query(query)
+    exp_q     = clean_q
+    raw_hits  = retrieve_vec(exp_q, top_k=TOP_K)
+    tf_only   = enrich_tf_only(raw_hits, exp_q)
+    pr_hits   = rerank_with_pagerank(raw_hits, exp_q)
+    return DualRank(
+        expanded_query=exp_q,
+        tfidf_only=tf_only,
+        tfidf_pagerank=pr_hits,
+    )
 
 
 @app.get("/rocchio", response_model=DualRank)
 def rocchio(query: str):
-    exp_q, raw_hits = retrieve_expanded(query)
-    tf_only = enrich_tf_only(raw_hits, exp_q)
-    pr_hits = rerank_with_pagerank(raw_hits, exp_q)
-    return DualRank(tfidf_only=tf_only, tfidf_pagerank=pr_hits)
+    # retrieve_expanded returns (expanded_query, hits)
+    clean_q= clean_query(query)
+    exp_q, raw_hits = retrieve_expanded_rake(clean_q)
+    clean_q=clean_query(exp_q)
+    tf_only         = enrich_tf_only(raw_hits, clean_q)
+    pr_hits         = rerank_with_pagerank(raw_hits, clean_q)
+    return DualRank(
+        expanded_query=clean_q,
+        tfidf_only=tf_only,
+        tfidf_pagerank=pr_hits,
+    )
 
 
 @app.get("/association", response_model=DualRank)
 def association(query: str):
-    base_hits = retrieve_vec(query, top_k=TOP_K)
+    clean_q= clean_query(query)
+    # 1) get top terms & build association‐expanded query
+    base_hits = retrieve_vec(clean_q , top_k=TOP_K)
     rel_idxs  = [doc2idx[h["doc_id"]] for h in base_hits]
     cands     = get_top_terms(rel_idxs, tfidf_matrix, feature_names, top_n=CAND_TERMS)
     terms     = association_clusters(cands, rel_idxs, tfidf_matrix, feature_names)
-    assoc_q   = query + " " + " ".join(terms)
+    exp_q     = query + " " + " ".join(terms)
 
-    raw_hits = retrieve_vec(assoc_q, top_k=TOP_K)
-    tf_only  = enrich_tf_only(raw_hits, assoc_q)
-    pr_hits  = rerank_with_pagerank(raw_hits, assoc_q)
-    return DualRank(tfidf_only=tf_only, tfidf_pagerank=pr_hits)
+    # 2) retrieve on exp_q
+    clean_q = clean_query(exp_q)
+    raw_hits = retrieve_vec(clean_q, top_k=TOP_K)
+    tf_only  = enrich_tf_only(raw_hits, clean_q)
+    pr_hits  = rerank_with_pagerank(raw_hits, clean_q)
+    return DualRank(
+        expanded_query=clean_q,
+        tfidf_only=tf_only,
+        tfidf_pagerank=pr_hits,
+    )
 
 
 @app.get("/metric", response_model=DualRank)
 def metric(query: str):
-    base_hits = retrieve_vec(query, top_k=TOP_K)
+    clean_q = clean_query(query)
+    base_hits = retrieve_vec(clean_q, top_k=TOP_K)
     rel_idxs  = [doc2idx[h["doc_id"]] for h in base_hits]
     cands     = get_top_terms(rel_idxs, tfidf_matrix, feature_names, top_n=CAND_TERMS)
     terms     = metric_clusters(cands, rel_idxs, tfidf_matrix, feature_names, n_clusters=N_CLUSTERS)
-    metric_q  = query + " " + " ".join(terms)
-
-    raw_hits = retrieve_vec(metric_q, top_k=TOP_K)
-    tf_only  = enrich_tf_only(raw_hits, metric_q)
-    pr_hits  = rerank_with_pagerank(raw_hits, metric_q)
-    return DualRank(tfidf_only=tf_only, tfidf_pagerank=pr_hits)
+    exp_q     = clean_q + " " + " ".join(terms)
+    clean_q = clean_query(exp_q)
+    raw_hits = retrieve_vec(clean_q, top_k=TOP_K)
+    tf_only  = enrich_tf_only(raw_hits, clean_q)
+    pr_hits  = rerank_with_pagerank(raw_hits, clean_q)
+    return DualRank(
+        expanded_query=clean_q,
+        tfidf_only=tf_only,
+        tfidf_pagerank=pr_hits,
+    )
 
 
 @app.get("/scalar", response_model=DualRank)
 def scalar(query: str):
-    base_hits = retrieve_vec(query, top_k=TOP_K)
+    clean_q = clean_query(query)
+    base_hits = retrieve_vec(clean_q, top_k=TOP_K)
     rel_idxs  = [doc2idx[h["doc_id"]] for h in base_hits]
     cands     = get_top_terms(rel_idxs, tfidf_matrix, feature_names, top_n=CAND_TERMS)
     terms     = scalar_clusters(cands, rel_idxs, tfidf_matrix, feature_names, n_buckets=N_CLUSTERS)
-    scalar_q  = query + " " + " ".join(terms)
+    exp_q     = clean_q + " " + " ".join(terms)
+    clean_q = clean_query(exp_q)
+    raw_hits = retrieve_vec(clean_q, top_k=TOP_K)
+    tf_only  = enrich_tf_only(raw_hits, clean_q)
+    pr_hits  = rerank_with_pagerank(raw_hits, clean_q)
+    return DualRank(
+        expanded_query=clean_q,
+        tfidf_only=tf_only,
+        tfidf_pagerank=pr_hits,
+    )
 
-    raw_hits = retrieve_vec(scalar_q, top_k=TOP_K)
-    tf_only  = enrich_tf_only(raw_hits, scalar_q)
-    pr_hits  = rerank_with_pagerank(raw_hits, scalar_q)
-    return DualRank(tfidf_only=tf_only, tfidf_pagerank=pr_hits)
 
 
 @app.get("/")

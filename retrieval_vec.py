@@ -1,6 +1,7 @@
 # retrieval_vec.py
-
+from query_vector import clean_query
 import numpy as np
+import math
 from bson_loader_1 import load_matrix
 from metadata_loader import load_metadata
 from query_vector import query_to_bow
@@ -96,6 +97,11 @@ def retrieve_bm25(query: str, top_k: int = 10):
     seen    = set()
     top_inds = np.argsort(final_scores)[::-1]
     for i in top_inds:
+        score_val = float(final_scores[i])
+        # skip any non-finite scores
+        if not math.isfinite(score_val):
+            continue
+
         idx = cand_idxs[i]
         doc_id, title, url, snippet, _ = meta[idx]
         domain = urlparse(url).netloc.lower()
@@ -107,7 +113,7 @@ def retrieve_bm25(query: str, top_k: int = 10):
             "doc_id":  doc_id,
             "title":   title,
             "url":     url,
-            "score":   float(final_scores[i]),
+            "score":   score_val,
             "snippet": snippet
         })
         if len(top_hits) >= top_k:

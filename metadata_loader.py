@@ -24,6 +24,7 @@ def build_metadata():
 
             snippet = desc or (content[:200] + "…")
             sents   = sent_tokenize_regex(content)[:MAX_SENTS]
+            
             meta.append((doc_id, title, url, snippet, sents))
 
     with open(META_OUT_PATH, "wb") as out:

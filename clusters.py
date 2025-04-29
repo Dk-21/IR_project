@@ -1,81 +1,156 @@
 # clusters.py
 
+import re
 import numpy as np
 from sklearn.cluster import KMeans
 from scipy.sparse import csr_matrix
+import nltk
+
+# At the very top of your module—before any lemmatization calls:
+nltk.download("wordnet", quiet=True)
+# If you also need the “omw-1.4” data for some language mappings:
+nltk.download("omw-1.4", quiet=True)
+from nltk.corpus import stopwords
+from nltk.stem import WordNetLemmatizer
+
+# ——— Configuration ———
+MIN_TERM_LEN = 4           # drop very short terms
+STOPWORDS    = set(stopwords.words("english"))
+LEMMA        = WordNetLemmatizer()
+VALID_TOKEN  = re.compile(r"^[a-zA-Z]+$")  # only letters
+
+def _clean_terms(candidates):
+    """
+    Lowercase, alphabetic-only, length filter, stopword removal,
+    and lemmatization of candidates.
+    """
+    cleaned = []
+    for t in candidates:
+        t0 = t.lower().strip()
+        if not VALID_TOKEN.match(t0):
+            continue
+        if len(t0) < MIN_TERM_LEN or t0 in STOPWORDS:
+            continue
+        cleaned.append(LEMMA.lemmatize(t0))
+    # de-dupe while preserving order
+    seen = set()
+    out  = []
+    for t in cleaned:
+        if t not in seen:
+            seen.add(t)
+            out.append(t)
+    return out
+
+
+
+import re, numpy as np
+from sklearn.cluster import KMeans
+from scipy.sparse import csr_matrix
+from nltk.corpus import stopwords, wordnet
+import spacy
+
+# ——— CONFIG ———
+MIN_LEN      = 4
+STOPWORDS    = set(stopwords.words("english"))
+CODE_BLACK   = {"var","function","return","false","true","comment","reply",
+                "http","html","div","span","class","id","src"}
+_nlp         = spacy.load("en_core_web_sm", disable=["parser","ner"])
+WORD_RE      = re.compile(r"^[a-zA-Z]+$")
+
+
+def is_valid_term(t: str) -> bool:
+    t0 = t.lower()
+    if t0 in STOPWORDS or t0 in CODE_BLACK: 
+        return False
+    if len(t0) < MIN_LEN or not WORD_RE.match(t0):
+        return False
+    if not wordnet.synsets(t0):
+        return False
+    return True
+
+
+def pos_filter(tokens: list[str]) -> list[str]:
+    doc = _nlp(" ".join(tokens))
+    return [tok.text for tok in doc if tok.pos_ in {"NOUN","VERB","ADJ"}]
 
 
 def get_top_terms(
-    rel_idxs: list,
+    rel_idxs: list[int],
     tfidf_matrix: csr_matrix,
     feature_names: np.ndarray,
     top_n: int = 50
-) -> list:
-    """
-    Returns the top_n terms by summed TF-IDF score across the relevant documents.
-    """
-    # Subset the TF-IDF matrix to relevant documents
-    submat = tfidf_matrix[rel_idxs]
-    # Sum TF-IDF scores for each term (column)
-    term_scores = np.array(submat.sum(axis=0)).ravel()
-    # Get indices of the top_n scoring terms
-    top_indices = np.argsort(term_scores)[-top_n:]
-    # Map back to feature names
-    return [feature_names[i] for i in top_indices]
+) -> list[str]:
+    # 1) Sum TF-IDF across rel_docs
+    term_scores = np.array(tfidf_matrix[rel_idxs].sum(axis=0)).ravel()
+    top_idxs    = np.argsort(term_scores)[-top_n:]
+    raw_terms   = [feature_names[i] for i in top_idxs]
+    raw_scores  = [term_scores[i] for i in top_idxs]
 
+    # 2) Threshold: only keep terms ≥ median of these top_n
+    med = np.median(raw_scores)
+    filtered = [t.lower() for t, s in zip(raw_terms, raw_scores) if s >= med]
+
+    # 3) POS‐filter & WordNet & length/stop/code blacklist
+    posed = pos_filter(filtered)
+    final = [t for t in posed if is_valid_term(t)]
+
+    # 4) Dedupe & preserve order
+    seen, out = set(), []
+    for t in final:
+        if t not in seen:
+            seen.add(t)
+            out.append(t)
+    return out
 
 def association_clusters(
     candidates: list,
     rel_idxs: list,
     tfidf_matrix: csr_matrix,
     feature_names: np.ndarray,
-    threshold: int = 1
+    threshold: int = 2
 ) -> list:
     """
-    Clusters candidate terms by co-occurrence in the relevant docs,
-    then picks one representative term (highest avg TF-IDF) per cluster.
+    Co‐occurrence clustering: pick one term per connected component.
     """
-    # Map term names to column indices
-    name_to_idx = {t: i for i, t in enumerate(feature_names)}
-    # Filter out any candidates not in the vocabulary
-    filtered = [t for t in candidates if t in name_to_idx]
-    cidx = [name_to_idx[t] for t in filtered]
-    if not cidx:
+    cands = _clean_terms(candidates)
+    if not cands:
         return []
 
-    # Build a binary occurrence matrix: docs x terms
-    occ = (tfidf_matrix[rel_idxs][:, cidx].toarray() > 0)
-    n = len(cidx)
+    idx_map = {t:i for i,t in enumerate(feature_names)}
+    # filter out any candidate not in vocab
+    valid   = [t for t in cands if t in idx_map]
+    cidx    = [idx_map[t] for t in valid]
 
-    # Build adjacency list based on co-occurrence threshold
+    occ     = (tfidf_matrix[rel_idxs][:, cidx].toarray() > 0)
+    n       = len(cidx)
+
+    # build adjacency
     adj = [set() for _ in range(n)]
     for i in range(n):
         for j in range(i+1, n):
-            if np.logical_and(occ[:, i], occ[:, j]).sum() >= threshold:
+            if np.logical_and(occ[:,i], occ[:,j]).sum() >= threshold:
                 adj[i].add(j)
                 adj[j].add(i)
 
-    # Find connected components
-    seen = set()
-    clusters = []
+    # find connected components
+    seen, clusters = set(), []
     for i in range(n):
-        if i not in seen:
-            stack = [i]
-            comp = set()
-            while stack:
-                u = stack.pop()
-                if u not in seen:
-                    seen.add(u)
-                    comp.add(u)
-                    stack.extend(adj[u] - seen)
-            clusters.append(comp)
+        if i in seen: continue
+        stack, comp = [i], set()
+        while stack:
+            u = stack.pop()
+            if u not in seen:
+                seen.add(u)
+                comp.add(u)
+                stack.extend(adj[u] - seen)
+        clusters.append(comp)
 
-    # From each cluster, pick the term with highest average TF-IDF
+    # pick the highest‐avg TF–IDF term per cluster
     weights = tfidf_matrix[rel_idxs][:, cidx].toarray()
     selected = []
     for comp in clusters:
-        best = max(comp, key=lambda idx: weights[:, idx].mean())
-        selected.append(filtered[best])
+        best = max(comp, key=lambda i: weights[:,i].mean())
+        selected.append(valid[best])
     return selected
 
 
@@ -87,32 +162,30 @@ def metric_clusters(
     n_clusters: int = 4
 ) -> list:
     """
-    Uses KMeans to cluster candidate term vectors (across relevant docs),
-    then picks one representative term from each cluster.
+    K‐means clustering over term vectors (terms × docs).
     """
-    # Term name -> index mapping
-    name_to_idx = {t: i for i, t in enumerate(feature_names)}
-    filtered = [t for t in candidates if t in name_to_idx]
-    cidx = [name_to_idx[t] for t in filtered]
+    cands = _clean_terms(candidates)
+    if not cands:
+        return []
+
+    idx_map = {t:i for i,t in enumerate(feature_names)}
+    valid   = [t for t in cands if t in idx_map]
+    cidx    = [idx_map[t] for t in valid]
     if not cidx:
         return []
 
-    # Prepare term-document matrix for clustering: terms x docs
-    X = tfidf_matrix[rel_idxs][:, cidx].toarray().T
-    k = min(n_clusters, len(filtered))
-    if k <= 0:
-        return []
-
-    # Perform KMeans clustering
+    # term-document matrix: terms × docs
+    X      = tfidf_matrix[rel_idxs][:, cidx].toarray().T
+    k      = min(n_clusters, len(valid))
     labels = KMeans(n_clusters=k, random_state=42).fit_predict(X)
 
-    # Pick the highest-average TF-IDF term per cluster
+    # pick highest‐avg TF–IDF term per cluster
     weights = tfidf_matrix[rel_idxs][:, cidx].toarray()
     selected = []
     for lbl in sorted(set(labels)):
-        members = [i for i, lab in enumerate(labels) if lab == lbl]
-        best = max(members, key=lambda idx: weights[:, idx].mean())
-        selected.append(filtered[best])
+        members = [i for i,l in enumerate(labels) if l==lbl]
+        best    = max(members, key=lambda i: weights[:,i].mean())
+        selected.append(valid[best])
     return selected
 
 
@@ -124,26 +197,26 @@ def scalar_clusters(
     n_buckets: int = 3
 ) -> list:
     """
-    Buckets candidates by global IDF (computed from the entire corpus),
-    then selects the highest-IDF term within each bucket.
+    Buckets candidates by global IDF, then takes the top‐IDF per bucket.
     """
-    # Compute global DF and IDF for all terms
-    N = tfidf_matrix.shape[0]
-    csc = tfidf_matrix.tocsc()
-    df = np.diff(csc.indptr)
-    idf = np.log((N + 1) / (df + 1)) + 1
+    cands = _clean_terms(candidates)
+    if not cands:
+        return []
 
-    # Map names to indices and collect IDF for candidates
-    name_to_idx = {t: i for i, t in enumerate(feature_names)}
-    term_idfs = [(t, idf[name_to_idx[t]]) for t in candidates if t in name_to_idx]
+    # compute global IDF
+    N   = tfidf_matrix.shape[0]
+    csc = tfidf_matrix.tocsc()
+    df  = np.diff(csc.indptr)
+    idf = np.log((N + 1)/(df + 1)) + 1
+
+    idx_map = {t:i for i,t in enumerate(feature_names)}
+    term_idfs = [(t, idf[idx_map[t]]) for t in cands if t in idx_map]
     if not term_idfs:
         return []
 
-    # Sort by IDF and split into buckets
     term_idfs.sort(key=lambda x: x[1])
     buckets = np.array_split(term_idfs, n_buckets)
 
-    # Pick top IDF term in each bucket
     selected = []
     for bucket in buckets:
         if len(bucket) > 0:
