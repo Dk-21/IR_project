@@ -1,7 +1,7 @@
 import pickle, os
 from bson import decode_file_iter
 from scipy import sparse
-
+import scipy.sparse
 BSON_PATH    = "web_crawl/pages.bson"
 MATRIX_PATH  = "doc_tfidf_matrix.npz"
 DOCIDS_PATH  = "doc_ids.pkl"
@@ -45,6 +45,14 @@ def load_matrix():
     doc_ids = pickle.load(open(DOCIDS_PATH, "rb"))
     vocab   = pickle.load(open(VOCAB_PATH, "rb"))
     return mat, doc_ids, vocab
+import numpy as np
+import joblib
 
+def load_matrix_direct():
+    # adjust paths as needed
+    mat   = scipy.sparse.load_npz("doc_tfidf_matrix.npz")
+    doc_ids = joblib.load("doc_ids.pkl")
+    vocab   = joblib.load("vocab.pkl")
+    return mat, doc_ids, vocab
 if __name__=="__main__":
     build_matrix()

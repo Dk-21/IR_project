@@ -101,33 +101,28 @@ def rerank_with_pagerank(hits: List[Dict], query: str) -> List[SearchHit]:
 # --- API Endpoints ---
 # api.py (excerpt)
 
-@app.get("/baseline", response_model=DualRank)
-def baseline(query: str):
-    # baseline has no expansion, so exp_q = original
-    clean_q= clean_query(query)
-    exp_q     = clean_q
-    raw_hits  = retrieve_vec(exp_q, top_k=TOP_K)
-    tf_only   = enrich_tf_only(raw_hits, exp_q)
-    pr_hits   = rerank_with_pagerank(raw_hits, exp_q)
-    return DualRank(
-        expanded_query=exp_q,
-        tfidf_only=tf_only,
-        tfidf_pagerank=pr_hits,
-    )
 
 
 @app.get("/rocchio", response_model=DualRank)
 def rocchio(query: str):
-    # retrieve_expanded returns (expanded_query, hits)
-    clean_q= clean_query(query)
-    exp_q, raw_hits = retrieve_expanded_rake(clean_q)
-    clean_q=clean_query(exp_q)
-    tf_only         = enrich_tf_only(raw_hits, clean_q)
-    pr_hits         = rerank_with_pagerank(raw_hits, clean_q)
+    # 1) Clean the original query
+    clean_q = clean_query(query)
+
+    # 2) retrieve_expanded now comes from feedback_vec.py
+    exp_q, hits = retrieve_expanded(clean_q)
+
+    # 3) Make sure to clean your expanded query string
+    exp_q_clean = clean_query(exp_q)
+
+    # 4) Build the two rankings
+    tf_only = enrich_tf_only(hits, exp_q_clean)
+    pr_hits = rerank_with_pagerank(hits, exp_q_clean)
+
+    # 5) Return expanded_query + both rankings
     return DualRank(
-        expanded_query=clean_q,
-        tfidf_only=tf_only,
-        tfidf_pagerank=pr_hits,
+        expanded_query = exp_q_clean,
+        tfidf_only     = tf_only,
+        tfidf_pagerank = pr_hits,
     )
 
 

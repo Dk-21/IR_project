@@ -1,5 +1,4 @@
 # bson_loader.py
-
 import pickle
 import os
 from bson import decode_file_iter
